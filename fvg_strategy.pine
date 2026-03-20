@@ -1,0 +1,144 @@
+//@version=6
+strategy("FVG Strategy [MES]", overlay=true,
+         max_boxes_count  = 500,
+         default_qty_type = strategy.fixed,
+         default_qty_value = 1,
+         commission_type  = strategy.commission.cash_per_contract,
+         commission_value = 0.62)  // MES commission ~$0.62/side
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+int   fvgSpan = input.int(20,   "FVG Span (bars)",       minval=3, maxval=200,
+                group="FVG Settings")
+float slMult  = input.float(1.0, "Stop Loss  (× FVG height)", minval=0.1, step=0.1,
+                group="Risk")
+float tpMult  = input.float(2.0, "Take Profit (× FVG height)", minval=0.1, step=0.1,
+                group="Risk")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FAIR VALUE GAP DETECTION
+//   A 3-candle pattern where the middle candle leaves a price gap.
+//   Bullish FVG : high[2] < low[0]  →  zone = [high[2], low[0]]
+//   Bearish FVG : low[2]  > high[0] →  zone = [high[0], low[2]]
+// ─────────────────────────────────────────────────────────────────────────────
+bool newBull = high[2] < low[0]
+bool newBear = low[2]  > high[0]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE ARRAYS  (persist across bars)
+// ─────────────────────────────────────────────────────────────────────────────
+var box[]   fvgBox   = array.new<box>()
+var float[] fvgTop   = array.new<float>()
+var float[] fvgBot   = array.new<float>()
+var int[]   fvgStart = array.new<int>()
+var bool[]  fvgBull  = array.new<bool>()
+var bool[]  fvgDone  = array.new<bool>()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGISTER NEW BULLISH FVG
+// ─────────────────────────────────────────────────────────────────────────────
+if newBull
+    float _top = low[0]
+    float _bot = high[2]
+    int   _s   = bar_index - 1                        // middle candle bar
+
+    box _b = box.new(
+         left         = _s,
+         top          = _top,
+         right        = _s + fvgSpan,
+         bottom       = _bot,
+         xloc         = xloc.bar_index,
+         bgcolor      = color.new(color.blue, 82),    // pending — blue tint
+         border_color = color.new(color.teal, 40),
+         border_width = 1)
+
+    array.push(fvgBox,   _b)
+    array.push(fvgTop,   _top)
+    array.push(fvgBot,   _bot)
+    array.push(fvgStart, _s)
+    array.push(fvgBull,  true)
+    array.push(fvgDone,  false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGISTER NEW BEARISH FVG
+// ─────────────────────────────────────────────────────────────────────────────
+if newBear
+    float _top = low[2]
+    float _bot = high[0]
+    int   _s   = bar_index - 1
+
+    box _b = box.new(
+         left         = _s,
+         top          = _top,
+         right        = _s + fvgSpan,
+         bottom       = _bot,
+         xloc         = xloc.bar_index,
+         bgcolor      = color.new(color.orange, 82),  // pending — orange tint
+         border_color = color.new(color.orange, 40),
+         border_width = 1)
+
+    array.push(fvgBox,   _b)
+    array.push(fvgTop,   _top)
+    array.push(fvgBot,   _bot)
+    array.push(fvgStart, _s)
+    array.push(fvgBull,  false)
+    array.push(fvgDone,  false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EVALUATE ALL ACTIVE FVGs EACH BAR
+// ─────────────────────────────────────────────────────────────────────────────
+int sz = array.size(fvgBox)
+
+if sz > 0
+    for i = sz - 1 to 0
+        if not array.get(fvgDone, i)
+
+            float top  = array.get(fvgTop,   i)
+            float bot  = array.get(fvgBot,   i)
+            int   s    = array.get(fvgStart, i)
+            bool  bull = array.get(fvgBull,  i)
+            box   b    = array.get(fvgBox,   i)
+            float fvgH = top - bot              // height of the gap
+
+            // ── Expire: window elapsed without a test ─────────────────────
+            if bar_index > s + fvgSpan
+                array.set(fvgDone, i, true)
+
+            // ── Bullish FVG ───────────────────────────────────────────────
+            else if bull
+                // Price retraces into the gap zone (candle wick enters zone)
+                if low <= top and low >= bot
+                    array.set(fvgDone, i, true)
+
+                    if close >= bot
+                        // RESPECTED: closed at or above zone bottom → bullish hold
+                        box.set_bgcolor(b,      color.new(color.green, 90))  // 10 % opacity
+                        box.set_border_color(b, color.new(color.green, 20))
+                        strategy.entry("Long", strategy.long)
+                        strategy.exit("Long X", "Long",
+                                      stop  = bot - fvgH * slMult,
+                                      limit = top + fvgH * tpMult)
+                    else
+                        // REJECTED: closed below zone bottom → breakdown
+                        box.set_bgcolor(b,      color.new(color.red, 80))
+                        box.set_border_color(b, color.new(color.red, 20))
+
+            // ── Bearish FVG ───────────────────────────────────────────────
+            else
+                // Price retraces up into the gap zone
+                if high >= bot and high <= top
+                    array.set(fvgDone, i, true)
+
+                    if close <= top
+                        // RESPECTED: closed at or below zone top → bearish hold
+                        box.set_bgcolor(b,      color.new(color.green, 90))  // 10 % opacity
+                        box.set_border_color(b, color.new(color.green, 20))
+                        strategy.entry("Short", strategy.short)
+                        strategy.exit("Short X", "Short",
+                                      stop  = top + fvgH * slMult,
+                                      limit = bot - fvgH * tpMult)
+                    else
+                        // REJECTED: closed above zone top → breakout
+                        box.set_bgcolor(b,      color.new(color.red, 80))
+                        box.set_border_color(b, color.new(color.red, 20))
