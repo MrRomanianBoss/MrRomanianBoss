@@ -18,9 +18,60 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
 warnings.filterwarnings("ignore")
+
+
+# ──────────────────────────────────────────────
+#  Pure numpy/pandas indicator implementations
+#  (replaces pandas_ta — no extra install needed)
+# ──────────────────────────────────────────────
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+
+
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
+    prev_high  = high.shift(1)
+    prev_low   = low.shift(1)
+    prev_close = close.shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    dm_plus  = np.where((high - prev_high) > (prev_low - low),
+                        np.maximum(high - prev_high, 0.0), 0.0)
+    dm_minus = np.where((prev_low - low) > (high - prev_high),
+                        np.maximum(prev_low - low, 0.0), 0.0)
+
+    atr_s  = tr.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    dmp_s  = pd.Series(dm_plus,  index=high.index).ewm(
+                 alpha=1 / length, min_periods=length, adjust=False).mean()
+    dmm_s  = pd.Series(dm_minus, index=high.index).ewm(
+                 alpha=1 / length, min_periods=length, adjust=False).mean()
+
+    di_plus  = 100 * dmp_s / atr_s.replace(0, np.nan)
+    di_minus = 100 * dmm_s / atr_s.replace(0, np.nan)
+    dx       = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
+    adx_val  = dx.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    return adx_val
+
+
+def _bbands(close: pd.Series, length: int, std: float):
+    mid   = close.rolling(length).mean()
+    sigma = close.rolling(length).std(ddof=0)
+    upper = mid + std * sigma
+    lower = mid - std * sigma
+    return upper, mid, lower
 
 # ──────────────────────────────────────────────
 #  Contract specifications ($ value per 1 point)
@@ -68,17 +119,15 @@ def compute_indicators(df: pd.DataFrame, params: StrategyParams = PARAMS) -> pd.
     df.columns = [c.lower() for c in df.columns]
 
     # ── Bollinger Bands ──────────────────────────────────────────────────────
-    bbands = ta.bbands(df["close"], length=params.bb_period, std=params.bb_std)
-    df["bb_upper"] = bbands[f"BBU_{params.bb_period}_{params.bb_std}"]
-    df["bb_lower"] = bbands[f"BBL_{params.bb_period}_{params.bb_std}"]
-    df["bb_mid"]   = bbands[f"BBM_{params.bb_period}_{params.bb_std}"]   # = 20-SMA
+    df["bb_upper"], df["bb_mid"], df["bb_lower"] = _bbands(
+        df["close"], params.bb_period, params.bb_std
+    )
 
     # ── ATR ─────────────────────────────────────────────────────────────────
-    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=params.atr_period)
+    df["atr"] = _atr(df["high"], df["low"], df["close"], params.atr_period)
 
     # ── ADX ─────────────────────────────────────────────────────────────────
-    adx_df = ta.adx(df["high"], df["low"], df["close"], length=params.adx_period)
-    df["adx"] = adx_df[f"ADX_{params.adx_period}"]
+    df["adx"] = _adx(df["high"], df["low"], df["close"], params.adx_period)
 
     return df
 
