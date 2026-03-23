@@ -1,0 +1,21 @@
+# MAVER Strategy — Python dependencies
+# Install: pip install -r requirements.txt
+
+# Core data & numerics
+numpy>=1.26.0
+pandas>=2.2.0
+pandas_ta>=0.3.14b
+
+# Historical data (free, no auth)
+yfinance>=0.2.40
+
+# Interactive Brokers (optional — comment out if not using IBKR)
+ib_insync>=0.9.86
+
+# Visualisation (optional but recommended for equity curve plots)
+matplotlib>=3.9.0
+seaborn>=0.13.0
+
+# Notebook support (optional)
+jupyter>=1.0.0
+ipykernel>=6.29.0
